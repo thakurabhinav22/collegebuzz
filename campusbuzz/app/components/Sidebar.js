@@ -36,8 +36,8 @@ export default function Sidebar({ user, userData }) {
   const navItems = [
     { icon: Home, label: 'Home', href: '/dashboard', active: pathname === '/dashboard' },
     { icon: Compass, label: 'Explore', href: '/explore', active: pathname === '/explore' },
-    { icon: Bell, label: 'Notifications', href: '/notifications', active: pathname === '/notifications' },
-    { icon: MessageSquare, label: 'Messages', href: '/messages', active: pathname === '/messages' },
+    // { icon: Bell, label: 'Notifications', href: '/notifications', active: pathname === '/notifications' },
+    // { icon: MessageSquare, label: 'Messages', href: '/messages', active: pathname === '/messages' },
     { icon: Users, label: 'College Groups', href: '/groups', active: pathname === '/groups' },
     { icon: User, label: 'Profile', href: '/profile', active: pathname === '/profile' },
   ];
