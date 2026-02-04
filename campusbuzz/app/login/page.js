@@ -103,7 +103,7 @@ export default function LoginPage() {
       await saveUserToDatabase(user);
 
       // Redirect to home page
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     } catch (err) {
       console.error('Google sign in error:', err);
       setError(err.message);
@@ -153,7 +153,7 @@ export default function LoginPage() {
       await saveUserToDatabase(user);
 
       // Redirect to home page
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     } catch (err) {
       console.error('Email auth error:', err);
       if (err.code === 'auth/user-not-found') {
