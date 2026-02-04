@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { GraduationCap, Mail, Lock, Eye, EyeOff, ArrowLeft, AlertCircle } from 'lucide-react';
+import { GraduationCap, Mail, Lock, Eye, EyeOff, ArrowLeft, AlertCircle, Clock } from 'lucide-react';
 import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { ref, set, get, serverTimestamp } from 'firebase/database';
 import { auth, database } from '../lib/firebase';
@@ -20,6 +20,7 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [showDomainPopup, setShowDomainPopup] = useState(false);
   const [showRequestPopup, setShowRequestPopup] = useState(false);
+  const [showPendingPopup, setShowPendingPopup] = useState(false);
   const [rejectedEmail, setRejectedEmail] = useState('');
 
   // Allowed email domain
@@ -28,6 +29,27 @@ export default function LoginPage() {
   // Check if email domain is allowed
   const isAllowedDomain = (email) => {
     return email.toLowerCase().endsWith(ALLOWED_DOMAIN);
+  };
+
+  // Check if user has already requested access
+  const hasAlreadyRequested = async (email) => {
+    try {
+      const requestsRef = ref(database, 'accessRequests');
+      const snapshot = await get(requestsRef);
+      
+      if (snapshot.exists()) {
+        const requests = snapshot.val();
+        // Check if any request matches the email
+        const existingRequest = Object.values(requests).find(
+          request => request.email.toLowerCase() === email.toLowerCase()
+        );
+        return existingRequest !== undefined;
+      }
+      return false;
+    } catch (err) {
+      console.error('Error checking existing requests:', err);
+      return false;
+    }
   };
 
   // Save user data to Realtime Database
@@ -81,6 +103,7 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     setShowDomainPopup(false);
+    setShowPendingPopup(false);
     
     try {
       const provider = new GoogleAuthProvider();
@@ -92,9 +115,19 @@ export default function LoginPage() {
         // Sign out the user
         await auth.signOut();
         
-        // Show domain restriction popup
+        // Check if user has already requested access
+        const alreadyRequested = await hasAlreadyRequested(user.email);
+        
         setRejectedEmail(user.email);
-        setShowDomainPopup(true);
+        
+        if (alreadyRequested) {
+          // Show pending request popup
+          setShowPendingPopup(true);
+        } else {
+          // Show domain restriction popup with option to request
+          setShowDomainPopup(true);
+        }
+        
         setLoading(false);
         return;
       }
@@ -117,11 +150,23 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     setShowDomainPopup(false);
+    setShowPendingPopup(false);
 
     // Validate email domain
     if (!isAllowedDomain(formData.email)) {
+      // Check if user has already requested access
+      const alreadyRequested = await hasAlreadyRequested(formData.email);
+      
       setRejectedEmail(formData.email);
-      setShowDomainPopup(true);
+      
+      if (alreadyRequested) {
+        // Show pending request popup
+        setShowPendingPopup(true);
+      } else {
+        // Show domain restriction popup with option to request
+        setShowDomainPopup(true);
+      }
+      
       setLoading(false);
       return;
     }
@@ -174,7 +219,10 @@ export default function LoginPage() {
 
   const handleRequestAccess = async () => {
     setLoading(true);
+    setError('');
+    
     try {
+      // Save the new request
       await saveAccessRequest(rejectedEmail, formData.name);
       setShowDomainPopup(false);
       setShowRequestPopup(true);
@@ -409,7 +457,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      {/* Domain Restriction Popup */}
+      {/* Domain Restriction Popup (First-time users) */}
       {showDomainPopup && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-gray-900 border border-red-500 rounded-2xl p-8 max-w-md w-full">
@@ -430,6 +478,13 @@ export default function LoginPage() {
               </p>
             </div>
 
+            {error && (
+              <div className="bg-yellow-500/10 border border-yellow-500 text-yellow-500 px-4 py-3 rounded-lg mb-4 text-sm flex items-start gap-2">
+                <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+
             <p className="text-sm text-gray-400 mb-6">
               If you believe you should have access, you can request approval from an administrator.
             </p>
@@ -444,7 +499,10 @@ export default function LoginPage() {
               </button>
               
               <button
-                onClick={() => setShowDomainPopup(false)}
+                onClick={() => {
+                  setShowDomainPopup(false);
+                  setError('');
+                }}
                 className="w-full bg-gray-800 hover:bg-gray-700 py-3 px-4 rounded-lg font-medium transition"
               >
                 Close
@@ -454,7 +512,54 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* Request Submitted Popup */}
+      {/* Request Pending Popup (Users who already requested) */}
+      {showPendingPopup && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-gray-900 border border-yellow-500 rounded-2xl p-8 max-w-md w-full">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 bg-yellow-500/20 rounded-full flex items-center justify-center">
+                <Clock className="w-6 h-6 text-yellow-500" />
+              </div>
+              <h2 className="text-2xl font-bold">Request Pending</h2>
+            </div>
+            
+            <p className="text-gray-300 mb-4">
+              Your access request is currently being reviewed by the administrators.
+            </p>
+            
+            <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4 mb-6">
+              <p className="text-sm text-yellow-400">
+                Email: <span className="font-semibold">{rejectedEmail}</span>
+              </p>
+              <p className="text-sm text-yellow-400 mt-2">
+                Status: <span className="font-semibold">Under Review</span>
+              </p>
+            </div>
+
+            <p className="text-sm text-gray-400 mb-6">
+              You will receive an email notification once your request has been approved. Please check your inbox regularly.
+            </p>
+
+            <div className="bg-blue-500/10 border border-blue-500/50 rounded-lg p-4 mb-6">
+              <p className="text-sm text-blue-400">
+                💡 <span className="font-semibold">Tip:</span> If you need urgent access, please contact your administrator directly.
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                setShowPendingPopup(false);
+                setRejectedEmail('');
+              }}
+              className="w-full bg-blue-500 hover:bg-blue-600 py-3 px-4 rounded-lg font-medium transition"
+            >
+              Okay, Got It
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Request Submitted Popup (Just submitted) */}
       {showRequestPopup && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-gray-900 border border-green-500 rounded-2xl p-8 max-w-md w-full">
@@ -473,6 +578,7 @@ export default function LoginPage() {
               onClick={() => {
                 setShowRequestPopup(false);
                 setRejectedEmail('');
+                setError('');
               }}
               className="w-full bg-blue-500 hover:bg-blue-600 py-3 px-4 rounded-lg font-medium transition"
             >
