@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { GraduationCap, Mail, Lock, Eye, EyeOff, ArrowLeft, AlertCircle, Clock } from 'lucide-react';
 import { signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { ref, set, get, serverTimestamp } from 'firebase/database';
+import { ref, set, get, serverTimestamp, query, orderByChild, equalTo } from 'firebase/database';
 import { auth, database } from '../lib/firebase';
 
 export default function LoginPage() {
@@ -21,6 +21,7 @@ export default function LoginPage() {
   const [showDomainPopup, setShowDomainPopup] = useState(false);
   const [showRequestPopup, setShowRequestPopup] = useState(false);
   const [showPendingPopup, setShowPendingPopup] = useState(false);
+  const [showRejectedPopup, setShowRejectedPopup] = useState(false);
   const [rejectedEmail, setRejectedEmail] = useState('');
 
   // Allowed email domain
@@ -31,23 +32,45 @@ export default function LoginPage() {
     return email.toLowerCase().endsWith(ALLOWED_DOMAIN);
   };
 
-  // Check if user has already requested access
-  const hasAlreadyRequested = async (email) => {
+  // Check request status for email
+  const checkRequestStatus = async (email) => {
     try {
       const requestsRef = ref(database, 'accessRequests');
       const snapshot = await get(requestsRef);
       
       if (snapshot.exists()) {
         const requests = snapshot.val();
-        // Check if any request matches the email
         const existingRequest = Object.values(requests).find(
           request => request.email.toLowerCase() === email.toLowerCase()
         );
-        return existingRequest !== undefined;
+        
+        if (existingRequest) {
+          return existingRequest.status; // 'pending', 'rejected', etc.
+        }
+      }
+      return null;
+    } catch (err) {
+      console.error('Error checking request status:', err);
+      return null;
+    }
+  };
+
+  // Check if email is approved (has placeholder user entry)
+  const isEmailApproved = async (email) => {
+    try {
+      const usersRef = ref(database, 'users');
+      const snapshot = await get(usersRef);
+      
+      if (snapshot.exists()) {
+        const users = snapshot.val();
+        const approvedUser = Object.values(users).find(
+          user => user.email?.toLowerCase() === email.toLowerCase() && user.approved === true
+        );
+        return approvedUser !== undefined;
       }
       return false;
     } catch (err) {
-      console.error('Error checking existing requests:', err);
+      console.error('Error checking approval:', err);
       return false;
     }
   };
@@ -66,6 +89,8 @@ export default function LoginPage() {
           name: user.displayName || formData.name || 'TCET Student',
           profileImage: user.photoURL || '',
           role: 'student',
+          verified: false,
+          inCommunity: false,
           createdAt: serverTimestamp(),
           lastLogin: serverTimestamp()
         });
@@ -104,6 +129,7 @@ export default function LoginPage() {
     setError('');
     setShowDomainPopup(false);
     setShowPendingPopup(false);
+    setShowRejectedPopup(false);
     
     try {
       const provider = new GoogleAuthProvider();
@@ -112,19 +138,27 @@ export default function LoginPage() {
 
       // Check if email domain is allowed
       if (!isAllowedDomain(user.email)) {
-        // Sign out the user
+        // Check if email is approved by admin
+        const approved = await isEmailApproved(user.email);
+        if (approved) {
+          // User is approved, save to database and allow login
+          await saveUserToDatabase(user);
+          window.location.href = '/dashboard';
+          return;
+        }
+
+        // Not approved - sign out and check request status
         await auth.signOut();
         
-        // Check if user has already requested access
-        const alreadyRequested = await hasAlreadyRequested(user.email);
-        
+        // Check request status
+        const status = await checkRequestStatus(user.email);
         setRejectedEmail(user.email);
         
-        if (alreadyRequested) {
-          // Show pending request popup
+        if (status === 'rejected') {
+          setShowRejectedPopup(true);
+        } else if (status === 'pending') {
           setShowPendingPopup(true);
         } else {
-          // Show domain restriction popup with option to request
           setShowDomainPopup(true);
         }
         
@@ -132,7 +166,7 @@ export default function LoginPage() {
         return;
       }
 
-      // Save user to database
+      // Domain is allowed - save user to database
       await saveUserToDatabase(user);
 
       // Redirect to home page
@@ -151,24 +185,30 @@ export default function LoginPage() {
     setError('');
     setShowDomainPopup(false);
     setShowPendingPopup(false);
+    setShowRejectedPopup(false);
 
     // Validate email domain
     if (!isAllowedDomain(formData.email)) {
-      // Check if user has already requested access
-      const alreadyRequested = await hasAlreadyRequested(formData.email);
+      // Check if email is approved by admin
+      const approved = await isEmailApproved(formData.email);
       
-      setRejectedEmail(formData.email);
-      
-      if (alreadyRequested) {
-        // Show pending request popup
-        setShowPendingPopup(true);
-      } else {
-        // Show domain restriction popup with option to request
-        setShowDomainPopup(true);
+      if (!approved) {
+        // Check request status
+        const status = await checkRequestStatus(formData.email);
+        setRejectedEmail(formData.email);
+        
+        if (status === 'rejected') {
+          setShowRejectedPopup(true);
+        } else if (status === 'pending') {
+          setShowPendingPopup(true);
+        } else {
+          setShowDomainPopup(true);
+        }
+        
+        setLoading(false);
+        return;
       }
-      
-      setLoading(false);
-      return;
+      // If approved, continue with normal flow
     }
 
     if (isSignUp && formData.password !== formData.confirmPassword) {
@@ -222,7 +262,6 @@ export default function LoginPage() {
     setError('');
     
     try {
-      // Save the new request
       await saveAccessRequest(rejectedEmail, formData.name);
       setShowDomainPopup(false);
       setShowRequestPopup(true);
@@ -274,22 +313,10 @@ export default function LoginPage() {
             className="w-full bg-white text-gray-900 hover:bg-gray-100 py-3 px-4 rounded-lg font-medium transition flex items-center justify-center gap-3 mb-6 disabled:opacity-50"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-              />
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
             </svg>
             Continue with Google
           </button>
@@ -314,12 +341,9 @@ export default function LoginPage() {
 
           {/* Email/Password Form */}
           <form onSubmit={handleEmailAuth} className="space-y-4">
-            {/* Name Input (Sign Up only) */}
             {isSignUp && (
               <div>
-                <label htmlFor="name" className="block text-sm font-medium mb-2">
-                  Full Name
-                </label>
+                <label htmlFor="name" className="block text-sm font-medium mb-2">Full Name</label>
                 <div className="relative">
                   <GraduationCap className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                   <input
@@ -336,11 +360,8 @@ export default function LoginPage() {
               </div>
             )}
 
-            {/* Email Input */}
             <div>
-              <label htmlFor="email" className="block text-sm font-medium mb-2">
-                Email Address
-              </label>
+              <label htmlFor="email" className="block text-sm font-medium mb-2">Email Address</label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -354,16 +375,11 @@ export default function LoginPage() {
                   placeholder="student@tcetmumbai.in"
                 />
               </div>
-              <p className="text-xs text-gray-500 mt-1">
-                Only @tcetmumbai.in emails are allowed
-              </p>
+              <p className="text-xs text-gray-500 mt-1">Only @tcetmumbai.in emails are allowed</p>
             </div>
 
-            {/* Password Input */}
             <div>
-              <label htmlFor="password" className="block text-sm font-medium mb-2">
-                Password
-              </label>
+              <label htmlFor="password" className="block text-sm font-medium mb-2">Password</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -386,12 +402,9 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* Confirm Password (Sign Up only) */}
             {isSignUp && (
               <div>
-                <label htmlFor="confirmPassword" className="block text-sm font-medium mb-2">
-                  Confirm Password
-                </label>
+                <label htmlFor="confirmPassword" className="block text-sm font-medium mb-2">Confirm Password</label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                   <input
@@ -408,19 +421,14 @@ export default function LoginPage() {
               </div>
             )}
 
-            {/* Forgot Password (Sign In only) */}
             {!isSignUp && (
               <div className="flex justify-end">
-                <button
-                  type="button"
-                  className="text-sm text-blue-400 hover:text-blue-300 transition"
-                >
+                <button type="button" className="text-sm text-blue-400 hover:text-blue-300 transition">
                   Forgot password?
                 </button>
               </div>
             )}
 
-            {/* Submit Button */}
             <button
               type="submit"
               disabled={loading}
@@ -430,7 +438,6 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Toggle Sign Up/Sign In */}
           <div className="mt-6 text-center">
             <p className="text-gray-400 text-sm">
               {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
@@ -448,7 +455,6 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Terms and Privacy */}
         <p className="text-center text-gray-500 text-xs mt-6">
           By continuing, you agree to our{' '}
           <a href="#" className="text-blue-400 hover:text-blue-300">Terms of Service</a>
@@ -457,7 +463,7 @@ export default function LoginPage() {
         </p>
       </div>
 
-      {/* Domain Restriction Popup (First-time users) */}
+      {/* Domain Restriction Popup */}
       {showDomainPopup && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-gray-900 border border-red-500 rounded-2xl p-8 max-w-md w-full">
@@ -467,28 +473,15 @@ export default function LoginPage() {
               </div>
               <h2 className="text-2xl font-bold">Access Denied</h2>
             </div>
-            
             <p className="text-gray-300 mb-4">
               Only students with <span className="text-blue-400 font-semibold">@tcetmumbai.in</span> email addresses are allowed to access this portal.
             </p>
-            
             <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 mb-6">
-              <p className="text-sm text-red-400">
-                Your email: <span className="font-semibold">{rejectedEmail}</span>
-              </p>
+              <p className="text-sm text-red-400">Your email: <span className="font-semibold">{rejectedEmail}</span></p>
             </div>
-
-            {error && (
-              <div className="bg-yellow-500/10 border border-yellow-500 text-yellow-500 px-4 py-3 rounded-lg mb-4 text-sm flex items-start gap-2">
-                <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                <span>{error}</span>
-              </div>
-            )}
-
             <p className="text-sm text-gray-400 mb-6">
               If you believe you should have access, you can request approval from an administrator.
             </p>
-
             <div className="flex flex-col gap-3">
               <button
                 onClick={handleRequestAccess}
@@ -497,12 +490,8 @@ export default function LoginPage() {
               >
                 {loading ? 'Submitting...' : 'Request Admin Approval'}
               </button>
-              
               <button
-                onClick={() => {
-                  setShowDomainPopup(false);
-                  setError('');
-                }}
+                onClick={() => { setShowDomainPopup(false); setError(''); }}
                 className="w-full bg-gray-800 hover:bg-gray-700 py-3 px-4 rounded-lg font-medium transition"
               >
                 Close
@@ -512,7 +501,7 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* Request Pending Popup (Users who already requested) */}
+      {/* Request Pending Popup */}
       {showPendingPopup && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-gray-900 border border-yellow-500 rounded-2xl p-8 max-w-md w-full">
@@ -522,35 +511,16 @@ export default function LoginPage() {
               </div>
               <h2 className="text-2xl font-bold">Request Pending</h2>
             </div>
-            
-            <p className="text-gray-300 mb-4">
-              Your access request is currently being reviewed by the administrators.
-            </p>
-            
+            <p className="text-gray-300 mb-4">Your access request is currently being reviewed by the administrators.</p>
             <div className="bg-yellow-500/10 border border-yellow-500/50 rounded-lg p-4 mb-6">
-              <p className="text-sm text-yellow-400">
-                Email: <span className="font-semibold">{rejectedEmail}</span>
-              </p>
-              <p className="text-sm text-yellow-400 mt-2">
-                Status: <span className="font-semibold">Under Review</span>
-              </p>
+              <p className="text-sm text-yellow-400">Email: <span className="font-semibold">{rejectedEmail}</span></p>
+              <p className="text-sm text-yellow-400 mt-2">Status: <span className="font-semibold">Under Review</span></p>
             </div>
-
             <p className="text-sm text-gray-400 mb-6">
-              You will receive an email notification once your request has been approved. Please check your inbox regularly.
+              You will receive an email notification once your request has been approved.
             </p>
-
-            <div className="bg-blue-500/10 border border-blue-500/50 rounded-lg p-4 mb-6">
-              <p className="text-sm text-blue-400">
-                💡 <span className="font-semibold">Tip:</span> If you need urgent access, please contact your administrator directly.
-              </p>
-            </div>
-
             <button
-              onClick={() => {
-                setShowPendingPopup(false);
-                setRejectedEmail('');
-              }}
+              onClick={() => { setShowPendingPopup(false); setRejectedEmail(''); }}
               className="w-full bg-blue-500 hover:bg-blue-600 py-3 px-4 rounded-lg font-medium transition"
             >
               Okay, Got It
@@ -559,7 +529,37 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* Request Submitted Popup (Just submitted) */}
+      {/* Request Rejected Popup */}
+      {showRejectedPopup && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-gray-900 border border-red-500 rounded-2xl p-8 max-w-md w-full">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 bg-red-500/20 rounded-full flex items-center justify-center">
+                <XCircle className="w-6 h-6 text-red-500" />
+              </div>
+              <h2 className="text-2xl font-bold">Request Rejected</h2>
+            </div>
+            <p className="text-gray-300 mb-4">
+              Your access request has been reviewed and rejected by the administrators.
+            </p>
+            <div className="bg-red-500/10 border border-red-500/50 rounded-lg p-4 mb-6">
+              <p className="text-sm text-red-400">Email: <span className="font-semibold">{rejectedEmail}</span></p>
+              <p className="text-sm text-red-400 mt-2">Status: <span className="font-semibold">Rejected</span></p>
+            </div>
+            <p className="text-sm text-gray-400 mb-6">
+              Please contact an administrator directly if you believe this is an error.
+            </p>
+            <button
+              onClick={() => { setShowRejectedPopup(false); setRejectedEmail(''); }}
+              className="w-full bg-blue-500 hover:bg-blue-600 py-3 px-4 rounded-lg font-medium transition"
+            >
+              Understood
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Request Submitted Popup */}
       {showRequestPopup && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50">
           <div className="bg-gray-900 border border-green-500 rounded-2xl p-8 max-w-md w-full">
@@ -569,17 +569,11 @@ export default function LoginPage() {
               </div>
               <h2 className="text-2xl font-bold">Request Submitted</h2>
             </div>
-            
             <p className="text-gray-300 mb-6">
               Your access request has been submitted to the administrators. You will be notified via email once your request is reviewed.
             </p>
-
             <button
-              onClick={() => {
-                setShowRequestPopup(false);
-                setRejectedEmail('');
-                setError('');
-              }}
+              onClick={() => { setShowRequestPopup(false); setRejectedEmail(''); setError(''); }}
               className="w-full bg-blue-500 hover:bg-blue-600 py-3 px-4 rounded-lg font-medium transition"
             >
               Okay

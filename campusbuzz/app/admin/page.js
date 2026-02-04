@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged } from 'firebase/auth';
-import { ref, get, set, onValue } from 'firebase/database';
+import { ref, get, set, onValue, remove } from 'firebase/database';
 import { auth, database } from '../lib/firebase';
 import Sidebar from '../components/Sidebar';
 import { Shield, CheckCircle, XCircle, Clock, Loader2, Search } from 'lucide-react';
@@ -16,6 +16,7 @@ export default function AdminPage() {
   const [accessRequests, setAccessRequests] = useState([]);
   const [users, setUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [processingRequest, setProcessingRequest] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -131,41 +132,74 @@ export default function AdminPage() {
     }
   };
 
-  const handleApproveRequest = async (requestId) => {
+  const handleApproveRequest = async (requestId, requestData) => {
+    setProcessingRequest(requestId);
+    
     try {
-      const requestRef = ref(database, `accessRequests/${requestId}`);
-      const snapshot = await get(requestRef);
+      // Create a placeholder user entry in the database
+      // This allows the user to login with their @tcetmumbai.in email
+      const userPlaceholderId = `pending_${Date.now()}_${requestData.email.replace(/[.@]/g, '_')}`;
+      const userRef = ref(database, `users/${userPlaceholderId}`);
       
-      if (snapshot.exists()) {
-        const requestData = snapshot.val();
-        await set(requestRef, {
-          ...requestData,
-          status: 'approved'
-        });
-        alert('Request approved! Please notify the user.');
-      }
+      await set(userRef, {
+        uid: userPlaceholderId,
+        email: requestData.email,
+        name: requestData.name || 'New User',
+        profileImage: '',
+        role: 'student',
+        verified: false,
+        inCommunity: false,
+        approved: true, // Mark as approved
+        createdAt: Date.now(),
+        lastLogin: null
+      });
+
+      // Delete the access request from database
+      const requestRef = ref(database, `accessRequests/${requestId}`);
+      await remove(requestRef);
+
+      alert(`Access approved for ${requestData.email}! They can now sign in with their email and create an account.`);
     } catch (error) {
       console.error('Error approving request:', error);
-      alert('Failed to approve request');
+      alert('Failed to approve request. Please try again.');
+    } finally {
+      setProcessingRequest(null);
     }
   };
 
-  const handleRejectRequest = async (requestId) => {
+  const handleRejectRequest = async (requestId, requestData) => {
+    setProcessingRequest(requestId);
+    
     try {
+      // Update request status to rejected
       const requestRef = ref(database, `accessRequests/${requestId}`);
-      const snapshot = await get(requestRef);
-      
-      if (snapshot.exists()) {
-        const requestData = snapshot.val();
-        await set(requestRef, {
-          ...requestData,
-          status: 'rejected'
-        });
-        alert('Request rejected.');
-      }
+      await set(requestRef, {
+        ...requestData,
+        status: 'rejected',
+        rejectedAt: Date.now()
+      });
+
+      alert(`Access request from ${requestData.email} has been rejected.`);
     } catch (error) {
       console.error('Error rejecting request:', error);
-      alert('Failed to reject request');
+      alert('Failed to reject request. Please try again.');
+    } finally {
+      setProcessingRequest(null);
+    }
+  };
+
+  const handleDeleteRejectedRequest = async (requestId) => {
+    setProcessingRequest(requestId);
+    
+    try {
+      const requestRef = ref(database, `accessRequests/${requestId}`);
+      await remove(requestRef);
+      alert('Rejected request deleted successfully.');
+    } catch (error) {
+      console.error('Error deleting request:', error);
+      alert('Failed to delete request.');
+    } finally {
+      setProcessingRequest(null);
     }
   };
 
@@ -175,6 +209,7 @@ export default function AdminPage() {
   );
 
   const pendingRequests = accessRequests.filter(r => r.status === 'pending');
+  const rejectedRequests = accessRequests.filter(r => r.status === 'rejected');
 
   if (loading) {
     return (
@@ -233,7 +268,7 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Access Requests */}
+            {/* Pending Access Requests */}
             {pendingRequests.length > 0 && (
               <div className="mb-8">
                 <h2 className="text-2xl font-bold mb-4">Pending Access Requests</h2>
@@ -266,18 +301,87 @@ export default function AdminPage() {
                             <td className="px-6 py-4 text-right">
                               <div className="flex justify-end gap-2">
                                 <button
-                                  onClick={() => handleApproveRequest(request.id)}
-                                  className="p-2 bg-green-500/20 text-green-500 rounded-lg hover:bg-green-500/30 transition"
+                                  onClick={() => handleApproveRequest(request.id, request)}
+                                  disabled={processingRequest === request.id}
+                                  className="px-3 py-2 bg-green-500/20 text-green-500 rounded-lg hover:bg-green-500/30 transition disabled:opacity-50 flex items-center gap-1"
                                 >
-                                  <CheckCircle className="w-4 h-4" />
+                                  {processingRequest === request.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <CheckCircle className="w-4 h-4" />
+                                  )}
+                                  <span className="text-xs">Approve</span>
                                 </button>
                                 <button
-                                  onClick={() => handleRejectRequest(request.id)}
-                                  className="p-2 bg-red-500/20 text-red-500 rounded-lg hover:bg-red-500/30 transition"
+                                  onClick={() => handleRejectRequest(request.id, request)}
+                                  disabled={processingRequest === request.id}
+                                  className="px-3 py-2 bg-red-500/20 text-red-500 rounded-lg hover:bg-red-500/30 transition disabled:opacity-50 flex items-center gap-1"
                                 >
-                                  <XCircle className="w-4 h-4" />
+                                  {processingRequest === request.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <XCircle className="w-4 h-4" />
+                                  )}
+                                  <span className="text-xs">Reject</span>
                                 </button>
                               </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rejected Access Requests */}
+            {rejectedRequests.length > 0 && (
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold mb-4">Rejected Access Requests</h2>
+                <div className="bg-black border border-red-900/30 rounded-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-900">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Email</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Name</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Requested</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Rejected</th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase">Status</th>
+                          <th className="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-800">
+                        {rejectedRequests.map((request) => (
+                          <tr key={request.id} className="hover:bg-gray-900/50">
+                            <td className="px-6 py-4 text-sm">{request.email}</td>
+                            <td className="px-6 py-4 text-sm">{request.name || 'N/A'}</td>
+                            <td className="px-6 py-4 text-sm text-gray-400">
+                              {new Date(request.requestedAt).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-gray-400">
+                              {request.rejectedAt ? new Date(request.rejectedAt).toLocaleDateString() : 'N/A'}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-red-500/20 text-red-500 rounded">
+                                <XCircle className="w-3 h-3" />
+                                Rejected
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <button
+                                onClick={() => handleDeleteRejectedRequest(request.id)}
+                                disabled={processingRequest === request.id}
+                                className="px-3 py-2 bg-gray-800 text-gray-300 rounded-lg hover:bg-gray-700 transition disabled:opacity-50 flex items-center gap-1 ml-auto"
+                              >
+                                {processingRequest === request.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <XCircle className="w-4 h-4" />
+                                )}
+                                <span className="text-xs">Delete</span>
+                              </button>
                             </td>
                           </tr>
                         ))}
